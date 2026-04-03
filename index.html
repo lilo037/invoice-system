@@ -6,6 +6,7 @@
 <title>InvoiceFlow — Smart Invoice Management</title>
 <link href="https://fonts.googleapis.com/css2?family=DM+Serif+Display:ital@0;1&family=DM+Sans:wght@300;400;500;600&family=JetBrains+Mono:wght@400;600&display=swap" rel="stylesheet">
 <script src="https://cdnjs.cloudflare.com/ajax/libs/Chart.js/4.4.0/chart.umd.min.js"></script>
+<script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2"></script>
 <style>
   :root {
     --ink: #0f0e0d; --paper: #f5f0e8; --cream: #ede7d9;
@@ -280,6 +281,12 @@
     </div>
   </div>
 </div>
+<div style="margin-top:14px;display:grid;grid-template-columns:1fr 1fr;gap:10px;">
+  <button class="btn btn-secondary" id="btn-signup" type="button">Create Account</button>
+  <button class="btn btn-secondary" id="btn-test-connection" type="button">Test Connection</button>
+</div>
+
+<div id="auth-info" style="font-size:13px;color:var(--muted);margin-top:12px;line-height:1.6;"></div>
 
 <!-- ══ APP ══ -->
 <div id="app">
@@ -447,14 +454,24 @@
 // ══════════════════════════════════════════
 //  DATA
 // ══════════════════════════════════════════
-const DEMO_EMAIL = ['admin','invoiceflow.com'].join('@');
-const DEMO_PASS  = 'admin123';
+'use strict';
 
-let invoices     = JSON.parse(localStorage.getItem('invoiceflow_v4') || 'null') || generateSampleData();
-let editingId    = null;
-let lineCount    = 0;
+// ================================
+// SUPABASE CONFIG
+// ================================
+const SUPABASE_URL = 'https://ovelqjvtyapixxhisege.supabase.co';
+const SUPABASE_KEY = 'sb_publishable_novWBtNeD4ozwKT2JPX0hg_dkwrxN72';
+const supabaseClient = window.supabase.createClient(SUPABASE_URL, SUPABASE_KEY);
+
+// ================================
+// APP STATE
+// ================================
+let invoices = [];
+let editingId = null;
+let lineCount = 0;
 let chartRevenue = null;
-let chartStatus  = null;
+let chartStatus = null;
+let currentUser = null;
 
 function save() { localStorage.setItem('invoiceflow_v4', JSON.stringify(invoices)); }
 
@@ -509,21 +526,104 @@ function showNotif(msg, type) {
 // ══════════════════════════════════════════
 //  AUTH
 // ══════════════════════════════════════════
-function doLogin() {
+async function showAppForLoggedInUser() {
+  const { data, error } = await supabaseClient.auth.getUser();
+
+  if (error || !data?.user) {
+    showNotif('Could not load user session.', 'error');
+    return;
+  }
+
+  currentUser = data.user;
+
+  document.getElementById('login-error').style.display = 'none';
+  document.getElementById('login-page').style.display = 'none';
+  document.getElementById('app').style.display = 'block';
+
+  document.getElementById('user-name').textContent = currentUser.email || 'User';
+  document.getElementById('user-avatar').textContent =
+    (currentUser.email || 'U').charAt(0).toUpperCase();
+
+  navTo('dashboard');
+}
+
+async function doLogin() {
   const email = document.getElementById('login-email').value.trim();
-  const pass  = document.getElementById('login-pass').value;
-  if (email === DEMO_EMAIL && pass === DEMO_PASS) {
-    document.getElementById('login-error').style.display = 'none';
-    document.getElementById('login-page').style.display  = 'none';
-    document.getElementById('app').style.display         = 'block';
-    navTo('dashboard');
-  } else {
+  const pass = document.getElementById('login-pass').value;
+
+  const { error } = await supabaseClient.auth.signInWithPassword({
+    email,
+    password: pass
+  });
+
+  if (error) {
     document.getElementById('login-error').style.display = 'block';
+    document.getElementById('login-error').textContent =
+      error.message || 'Invalid email or password.';
+    return;
+  }
+
+  await showAppForLoggedInUser();
+}
+
+async function doSignup() {
+  const email = document.getElementById('login-email').value.trim();
+  const pass = document.getElementById('login-pass').value;
+  const info = document.getElementById('auth-info');
+
+  info.textContent = '';
+
+  if (!email || !pass) {
+    info.textContent = 'Enter email and password first, then click Create Account.';
+    return;
+  }
+
+  const { error } = await supabaseClient.auth.signUp({
+    email,
+    password: pass
+  });
+
+  if (error) {
+    info.textContent = error.message || 'Could not create account.';
+    return;
+  }
+
+  info.textContent = 'Account created. Check your email and confirm your account if Supabase asks you to.';
+}
+
+async function doLogout() {
+  await supabaseClient.auth.signOut();
+  currentUser = null;
+  invoices = [];
+
+  document.getElementById('app').style.display = 'none';
+  document.getElementById('login-page').style.display = 'flex';
+}
+
+async function testConnection() {
+  const info = document.getElementById('auth-info');
+
+  const { error } = await supabaseClient
+    .from('invoices')
+    .select('id')
+    .limit(1);
+
+  if (error) {
+    info.textContent = 'Connection reached Supabase, but access is blocked until you log in. That is normal.';
+  } else {
+    info.textContent = 'Supabase connection works.';
   }
 }
-function doLogout() {
-  document.getElementById('app').style.display        = 'none';
-  document.getElementById('login-page').style.display = 'flex';
+
+async function restoreSession() {
+  const { data } = await supabaseClient.auth.getSession();
+
+  if (data?.session) {
+    await showAppForLoggedInUser();
+  } else {
+    document.getElementById('login-page').style.display = 'flex';
+    document.getElementById('app').style.display = 'none';
+  }
 }
 
 // ══════════════════════════════════════════
@@ -1022,49 +1122,59 @@ function printAsPDF() {
 // ══════════════════════════════════════════
 //  BOOT — wire all static buttons here
 // ══════════════════════════════════════════
-document.addEventListener('DOMContentLoaded', function () {
-  // Login pre-fill
-  document.getElementById('login-email').value      = DEMO_EMAIL;
-  document.getElementById('login-pass').value       = DEMO_PASS;
-  document.getElementById('hint-email').textContent = DEMO_EMAIL;
-
-  // Auth
+document.addEventListener('DOMContentLoaded', async function () {
+  // Auth buttons
   document.getElementById('btn-login').addEventListener('click', doLogin);
-  document.getElementById('login-pass').addEventListener('keydown', e => { if (e.key === 'Enter') doLogin(); });
+  document.getElementById('btn-signup').addEventListener('click', doSignup);
+  document.getElementById('btn-test-connection').addEventListener('click', testConnection);
+
+  document.getElementById('login-pass').addEventListener('keydown', e => {
+    if (e.key === 'Enter') doLogin();
+  });
+
   document.getElementById('btn-logout').addEventListener('click', doLogout);
 
   // Sidebar nav
   document.getElementById('nav-dashboard').addEventListener('click', () => navTo('dashboard'));
-  document.getElementById('nav-invoices').addEventListener('click',  () => navTo('invoices'));
-  document.getElementById('nav-create').addEventListener('click',    () => navTo('create'));
+  document.getElementById('nav-invoices').addEventListener('click', () => navTo('invoices'));
+  document.getElementById('nav-create').addEventListener('click', () => navTo('create'));
 
   // Topbar
   document.getElementById('btn-new-invoice').addEventListener('click', () => navTo('create'));
-  document.getElementById('btn-view-all').addEventListener('click',    () => navTo('invoices'));
+  document.getElementById('btn-view-all').addEventListener('click', () => navTo('invoices'));
 
   // Filters
-  document.getElementById('chart-year').addEventListener('change',    renderBarChart);
-  document.getElementById('search-input').addEventListener('input',   renderInvoicesTable);
+  document.getElementById('chart-year').addEventListener('change', renderBarChart);
+  document.getElementById('search-input').addEventListener('input', renderInvoicesTable);
   document.getElementById('filter-status').addEventListener('change', renderInvoicesTable);
-  document.getElementById('filter-month').addEventListener('change',  renderInvoicesTable);
+  document.getElementById('filter-month').addEventListener('change', renderInvoicesTable);
 
   // Print page
   document.getElementById('btn-print-back').addEventListener('click', () => navTo('invoices'));
-  document.getElementById('btn-print-pdf').addEventListener('click',  printAsPDF);
-  document.getElementById('btn-close-tip').addEventListener('click',  () => { document.getElementById('pdf-tip').style.display = 'none'; });
+  document.getElementById('btn-print-pdf').addEventListener('click', printAsPDF);
+  document.getElementById('btn-close-tip').addEventListener('click', () => {
+    document.getElementById('pdf-tip').style.display = 'none';
+  });
 
   // Modal
   document.getElementById('btn-modal-cancel').addEventListener('click', closeModal);
-  document.getElementById('modal-overlay').addEventListener('click', e => { if (e.target.id === 'modal-overlay') closeModal(); });
+  document.getElementById('modal-overlay').addEventListener('click', e => {
+    if (e.target.id === 'modal-overlay') closeModal();
+  });
 
   // Global table action delegation
   document.addEventListener('click', e => {
     const btn = e.target.closest('[data-act]');
     if (!btn) return;
+
     const { act, id } = btn.dataset;
-    if (act === 'edit')   editInvoice(id);
-    if (act === 'print')  printInvoice(id);
+
+    if (act === 'edit') editInvoice(id);
+    if (act === 'print') printInvoice(id);
     if (act === 'delete') confirmDelete(id);
+  });
+
+  await restoreSession();
   });
 });
 </script>
